@@ -2,7 +2,7 @@
 ## Title: |cff9482c9SoulSource|r
 ## Notes: Remembers whose soul is inside every Soul Shard created by Drain Soul and shows it in the shard's tooltip and the /shards window.
 ## Author: ryanjahansooz
-## Version: 1.0.0
+## Version: 1.1.0
 ## SavedVariablesPerCharacter: SoulSourceCharDB
 
 SoulSource.lua

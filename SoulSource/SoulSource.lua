@@ -12,6 +12,9 @@
 --        * a genuinely new slot = a fresh shard, so it takes the oldest pending soul
 --        * a vanished slot with no replacement = the shard was used up
 --   3. Tooltips for bag/bank slots and the /shards window read those records.
+--   4. Every captured soul gets a lifetime number for the character. When a
+--      shard is used up by a spell we announce its number, victim and location
+--      in /say.
 
 local ADDON_NAME = ...
 
@@ -19,6 +22,7 @@ local SHARD_ITEM_ID = 6265
 local DRAIN_SOUL_SPELL_IDS = { 1120, 8288, 8289, 11675 }
 local KILL_GRACE = 1.5    -- seconds after Drain Soul fades that a death still counts
 local PENDING_TTL = 6     -- seconds a recorded kill waits for its shard to appear
+local CONSUME_WINDOW = 3  -- seconds between a spell cast and a shard vanishing for it to count as consumed
 local HISTORY_MAX = 100
 
 local CHAT_PREFIX = "|cff9482c9SoulSource|r: "
@@ -38,6 +42,8 @@ local drainTargets = {}  -- guid -> victim info while our Drain Soul is (or just
 local pendingSouls = {}  -- victims that died to Drain Soul and are waiting for their shard
 local bankOpen = false
 local bagsReady = false
+local lastCast           -- { at = GetTime(), name = spell name } for the player's latest successful cast
+local sayQueue = {}      -- /say messages waiting for a key press or click
 
 -------------------------------------------------------------------------------
 -- Helpers
@@ -91,6 +97,10 @@ local function ColoredName(rec)
         end
     end
     return SOUL_COLOR .. (rec.name or UNKNOWN or "Unknown") .. "|r"
+end
+
+local function NumberTag(rec)
+    return rec.number and ("#" .. rec.number .. " ") or ""
 end
 
 local CLASSIFICATION_TEXT = {
@@ -264,6 +274,80 @@ local function MakeRecord(victim)
     }
 end
 
+-------------------------------------------------------------------------------
+-- /say announcements
+-------------------------------------------------------------------------------
+
+-- Outside instances the game only lets addons /say during a key press or
+-- mouse click, so messages wait in a queue until the player's next input.
+local function FlushSay()
+    if #sayQueue == 0 then return end
+    for _, msg in ipairs(sayQueue) do
+        SendChatMessage(msg, "SAY")
+    end
+    wipe(sayQueue)
+end
+
+local function QueueSay(msg)
+    sayQueue[#sayQueue + 1] = msg
+    if IsInInstance() then FlushSay() end
+end
+
+local inputFrame
+local function HookPlayerInput()
+    if not inputFrame then
+        inputFrame = CreateFrame("Frame", nil, UIParent)
+        inputFrame:SetScript("OnKeyDown", FlushSay)
+        WorldFrame:HookScript("OnMouseDown", FlushSay)
+        hooksecurefunc("UseAction", FlushSay)
+    end
+    -- Keyboard propagation can't be changed in combat; retried on PLAYER_REGEN_ENABLED.
+    if InCombatLockdown() then return false end
+    inputFrame:EnableKeyboard(true)
+    inputFrame:SetPropagateKeyboardInput(true)
+    return true
+end
+
+local function AnnounceConsumed(rec, spellName)
+    if rec.unknown then return end
+    local where = Location(rec)
+    local msg
+    if rec.number then
+        msg = string.format("Soul Shard #%d consumed by %s: the soul of %s, taken in %s.",
+            rec.number, spellName, rec.name or "?", where)
+    else
+        msg = string.format("Soul Shard consumed by %s: the soul of %s, taken in %s.",
+            spellName, rec.name or "?", where)
+    end
+    if db.say then QueueSay(msg) else Print(msg) end
+end
+
+local function MarkUsed(rec, spellName)
+    -- Saved variables don't keep shared table references, so find the
+    -- matching history entry instead of relying on rec being the same table.
+    for _, h in ipairs(db.history) do
+        if h.time == rec.time and h.name == rec.name and not h.usedAt then
+            h.usedAt = time()
+            h.usedFor = spellName
+            break
+        end
+    end
+end
+
+-- A shard that vanishes right before or after one of our casts was consumed by
+-- it; otherwise it was deleted, sold or traded and is dropped quietly. The cast
+-- event can arrive just after the bag update, so decide a moment later.
+local function OnShardGone(rec)
+    local goneAt = GetTime()
+    C_Timer.After(0.5, function()
+        local cast = lastCast
+        if cast and math.abs(cast.at - goneAt) <= CONSUME_WINDOW then
+            if not rec.unknown then MarkUsed(rec, cast.name) end
+            AnnounceConsumed(rec, cast.name)
+        end
+    end)
+end
+
 local function AddHistory(rec)
     if rec.unknown then return end
     table.insert(db.history, 1, rec)
@@ -273,8 +357,8 @@ end
 local function AnnounceCapture(rec)
     if not db.announce then return end
     local desc = Description(rec)
-    Print(string.format("Captured the soul of %s%s in %s.",
-        ColoredName(rec), desc ~= "" and (" (" .. desc .. ")") or "", Location(rec)))
+    Print(string.format("Captured soul %sof %s%s in %s.",
+        NumberTag(rec), ColoredName(rec), desc ~= "" and (" (" .. desc .. ")") or "", Location(rec)))
 end
 
 local UpdateWindow -- defined below
@@ -317,6 +401,8 @@ local function ScanBags()
         local rec
         if victim then
             rec = MakeRecord(victim)
+            db.shardCount = db.shardCount + 1
+            rec.number = db.shardCount
             db.stats.total = db.stats.total + 1
             db.stats.byName[rec.name or "?"] = (db.stats.byName[rec.name or "?"] or 0) + 1
             AddHistory(rec)
@@ -337,15 +423,8 @@ local function ScanBags()
         local dest = table.remove(added, 1)
         if dest then
             db.shards[dest] = rec
-        elseif not rec.unknown then
-            -- Saved variables don't keep shared table references, so find the
-            -- matching history entry instead of relying on rec being the same table.
-            for _, h in ipairs(db.history) do
-                if h.time == rec.time and h.name == rec.name and not h.usedAt then
-                    h.usedAt = time()
-                    break
-                end
-            end
+        else
+            OnShardGone(rec)
         end
         changed = true
     end
@@ -364,7 +443,7 @@ local function AddShardLines(tooltip, key)
         tooltip:AddLine("Soul origin unknown", 0.6, 0.6, 0.6)
         tooltip:AddLine("(obtained before SoulSource was tracking)", 0.6, 0.6, 0.6)
     else
-        tooltip:AddLine("Soul of " .. ColoredName(rec), 1, 1, 1)
+        tooltip:AddLine(NumberTag(rec) .. "Soul of " .. ColoredName(rec), 1, 1, 1)
         local desc = Description(rec)
         if desc ~= "" then tooltip:AddLine(desc, 0.85, 0.85, 0.85) end
         tooltip:AddLine(Location(rec), 0.85, 0.85, 0.85)
@@ -502,7 +581,7 @@ function UpdateWindow()
             row.line2:SetText(GRAY .. SlotLabel(entry.key) .. " - obtained before tracking|r")
         else
             local desc = Description(rec)
-            row.line1:SetText(ColoredName(rec) .. (desc ~= "" and (GRAY .. "  " .. desc .. "|r") or ""))
+            row.line1:SetText(NumberTag(rec) .. ColoredName(rec) .. (desc ~= "" and (GRAY .. "  " .. desc .. "|r") or ""))
             row.line2:SetText(GRAY .. Location(rec) .. " - " .. FormatAge(now - (rec.time or now)) ..
                 " - " .. SlotLabel(entry.key) .. "|r")
         end
@@ -511,8 +590,8 @@ function UpdateWindow()
     for i = #list + 1, #window.rows do window.rows[i]:Hide() end
     window.empty:SetShown(#list == 0)
     window.content:SetHeight(math.max(1, #list * ROW_HEIGHT))
-    window.summary:SetText(string.format("%d shard%s held  |  %d soul%s captured in total",
-        #list, #list == 1 and "" or "s", db.stats.total, db.stats.total == 1 and "" or "s"))
+    window.summary:SetText(string.format("%d shard%s held  |  %d soul%s captured in this character's life",
+        #list, #list == 1 and "" or "s", db.shardCount, db.shardCount == 1 and "" or "s"))
 end
 
 local function ToggleWindow()
@@ -537,14 +616,17 @@ local function PrintList()
         if rec.unknown then
             DEFAULT_CHAT_FRAME:AddMessage("  " .. GRAY .. "Unknown soul - " .. SlotLabel(entry.key) .. "|r")
         else
-            DEFAULT_CHAT_FRAME:AddMessage(string.format("  %s %s(%s, %s, %s)|r", ColoredName(rec), GRAY,
+            DEFAULT_CHAT_FRAME:AddMessage(string.format("  %s%s %s(%s, %s, %s)|r", NumberTag(rec), ColoredName(rec), GRAY,
                 Description(rec), Location(rec), FormatAge(now - (rec.time or now))))
         end
     end
 end
 
 local function PrintStats()
-    Print(string.format("%d soul(s) captured on this character.", db.stats.total))
+    Print(string.format("%d soul(s) captured in this character's life.", db.shardCount))
+    if db.stats.total ~= db.shardCount then
+        DEFAULT_CHAT_FRAME:AddMessage(string.format("  %d since the last /shards reset:", db.stats.total))
+    end
     local top = {}
     for name, count in pairs(db.stats.byName) do top[#top + 1] = { name = name, count = count } end
     table.sort(top, function(a, b) return a.count > b.count or (a.count == b.count and a.name < b.name) end)
@@ -562,8 +644,9 @@ local function PrintHistory()
     local now = time()
     for i = 1, math.min(15, #db.history) do
         local rec = db.history[i]
-        local used = rec.usedAt and (" - used " .. FormatAge(now - rec.usedAt)) or ""
-        DEFAULT_CHAT_FRAME:AddMessage(string.format("  %s %s(%s, %s%s)|r", ColoredName(rec), GRAY,
+        local used = rec.usedAt and (" - used " .. (rec.usedFor and ("for " .. rec.usedFor .. " ") or "") ..
+            FormatAge(now - rec.usedAt)) or ""
+        DEFAULT_CHAT_FRAME:AddMessage(string.format("  %s%s %s(%s, %s%s)|r", NumberTag(rec), ColoredName(rec), GRAY,
             Location(rec), FormatAge(now - (rec.time or now)), used))
     end
 end
@@ -583,10 +666,13 @@ SlashCmdList.SOULSOURCE = function(msg)
     elseif cmd == "announce" then
         db.announce = not db.announce
         Print("Capture announcements " .. (db.announce and "enabled." or "disabled."))
+    elseif cmd == "say" then
+        db.say = not db.say
+        Print("Consumed shards are now announced " .. (db.say and "in /say." or "only to you."))
     elseif cmd == "reset" then
         db.stats = { total = 0, byName = {} }
         db.history = {}
-        Print("Statistics and history cleared (shards in your bags keep their souls).")
+        Print("Statistics and history cleared (shards keep their souls, and shard numbering continues).")
         UpdateWindow()
     else
         Print("commands:")
@@ -595,6 +681,7 @@ SlashCmdList.SOULSOURCE = function(msg)
         DEFAULT_CHAT_FRAME:AddMessage("  /shards history - recently captured souls")
         DEFAULT_CHAT_FRAME:AddMessage("  /shards stats - most-captured souls")
         DEFAULT_CHAT_FRAME:AddMessage("  /shards announce - toggle the chat message on capture")
+        DEFAULT_CHAT_FRAME:AddMessage("  /shards say - toggle announcing consumed shards in /say")
         DEFAULT_CHAT_FRAME:AddMessage("  /shards reset - clear statistics and history")
     end
 end
@@ -612,10 +699,16 @@ events:RegisterEvent("BAG_UPDATE_DELAYED")
 events:RegisterEvent("PLAYERBANKSLOTS_CHANGED")
 events:RegisterEvent("BANKFRAME_OPENED")
 events:RegisterEvent("BANKFRAME_CLOSED")
+events:RegisterEvent("UNIT_SPELLCAST_SUCCEEDED")
+events:RegisterEvent("PLAYER_REGEN_ENABLED")
 
-events:SetScript("OnEvent", function(_, event, arg1)
+events:SetScript("OnEvent", function(_, event, arg1, _, arg3)
     if event == "COMBAT_LOG_EVENT_UNFILTERED" then
         OnCombatLog()
+    elseif event == "UNIT_SPELLCAST_SUCCEEDED" then
+        if arg1 == "player" then
+            lastCast = { at = GetTime(), name = (arg3 and GetSpellInfo(arg3)) or "a spell" }
+        end
     elseif event == "ADDON_LOADED" and arg1 == ADDON_NAME then
         SoulSourceCharDB = SoulSourceCharDB or {}
         db = SoulSourceCharDB
@@ -623,9 +716,15 @@ events:SetScript("OnEvent", function(_, event, arg1)
         db.history = db.history or {}
         db.stats = db.stats or { total = 0, byName = {} }
         if db.announce == nil then db.announce = true end
+        if db.say == nil then db.say = true end
+        -- Lifetime shard counter; never cleared by /shards reset.
+        db.shardCount = db.shardCount or db.stats.total
     elseif event == "PLAYER_LOGIN" then
         playerGUID = UnitGUID("player")
         HookTooltips()
+        if HookPlayerInput() then events:UnregisterEvent("PLAYER_REGEN_ENABLED") end
+    elseif event == "PLAYER_REGEN_ENABLED" then
+        if HookPlayerInput() then events:UnregisterEvent("PLAYER_REGEN_ENABLED") end
     elseif event == "PLAYER_ENTERING_WORLD" then
         if not bagsReady then
             C_Timer.After(2, function()
