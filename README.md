@@ -29,15 +29,34 @@ in the game.
 - Shards keep their soul when you move them between bag slots, bags, and the bank.
 - Lifetime stats and a history of recent captures for each character.
 
+### Options window, minimap button and tutorial
+- **Open the options** by typing `/soulsource` or left-clicking the minimap
+  button (it's also listed in the game's Interface/AddOns settings). Each
+  setting has a checkbox, and you can hover one to see what it does:
+  - Announce captured souls in chat
+  - Show the soul in Soul Shard tooltips
+  - /say when a shard is consumed
+  - /say lucky shard numbers (Nice, Very Nice, Dubs!...): untick this to turn off just the lucky-number messages
+  - Show the minimap button
+
+  The window also has buttons for the shard list, the tutorial and resetting stats.
+- **Minimap button**: left-click opens the options, right-click opens the shard
+  list, and you can drag it around the edge of the minimap.
+- **Tutorial**: a short walkthrough that pops up the first time you log in.
+  Open it again from the options window or with `/shards tutorial`.
+
 ### Commands
 | Command | What it does |
 | --- | --- |
+| `/soulsource` | Open the options window |
 | `/shards` | Show or hide the Soul Shard window |
+| `/shards tutorial` | Show the tutorial again |
 | `/shards list` | Print every shard and its soul to chat |
 | `/shards history` | Recently captured souls (and when each was used) |
 | `/shards stats` | Your most-captured souls |
 | `/shards announce` | Turn the capture chat message on or off |
-| `/shards say` | Turn /say messages (consumed shards and lucky numbers) on or off (when off, only you see it) |
+| `/shards say` | Turn the /say message for consumed shards on or off (when off, only you see it) |
+| `/shards lucky` | Turn the Nice / Very Nice / Dubs! messages on or off |
 | `/shards reset` | Clear stats and history (shard numbering keeps going) |
 
 ### Install

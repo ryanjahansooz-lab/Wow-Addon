@@ -16,7 +16,7 @@
 --      shard is used up by a spell we announce its number, victim and location
 --      in /say, and lucky numbers (69, 420, dubs, trips...) get a shout-out.
 
-local ADDON_NAME = ...
+local ADDON_NAME, ns = ...
 
 local SHARD_ITEM_ID = 6265
 local DRAIN_SOUL_SPELL_IDS = { 1120, 8288, 8289, 11675 }
@@ -372,9 +372,9 @@ local function MilestoneMessage(number)
 end
 
 local function AnnounceMilestone(rec)
+    if not db.milestones then return end
     local msg = MilestoneMessage(rec.number)
-    if not msg then return end
-    if db.say then QueueSay(msg) else Print(msg) end
+    if msg then QueueSay(msg) end
 end
 
 local function AnnounceCapture(rec)
@@ -461,7 +461,7 @@ end
 -------------------------------------------------------------------------------
 
 local function AddShardLines(tooltip, key)
-    local rec = db and db.shards[key]
+    local rec = db and db.tooltip and db.shards[key]
     if not rec then return end
     if rec.unknown then
         tooltip:AddLine("Soul origin unknown", 0.6, 0.6, 0.6)
@@ -623,6 +623,13 @@ local function ToggleWindow()
     window:SetShown(not window:IsShown())
 end
 
+local function ResetStats()
+    db.stats = { total = 0, byName = {} }
+    db.history = {}
+    Print("Statistics and history cleared (shards keep their souls, and shard numbering continues).")
+    UpdateWindow()
+end
+
 -------------------------------------------------------------------------------
 -- Slash commands
 -------------------------------------------------------------------------------
@@ -675,12 +682,15 @@ local function PrintHistory()
     end
 end
 
-SLASH_SOULSOURCE1 = "/shards"
-SLASH_SOULSOURCE2 = "/soulsource"
-SlashCmdList.SOULSOURCE = function(msg)
+SLASH_SOULSOURCESHARDS1 = "/shards"
+SlashCmdList.SOULSOURCESHARDS = function(msg)
     local cmd = strtrim(msg or ""):lower()
     if cmd == "" or cmd == "show" then
         ToggleWindow()
+    elseif cmd == "options" or cmd == "config" then
+        ns.ToggleOptions()
+    elseif cmd == "tutorial" then
+        ns.ShowTutorial()
     elseif cmd == "list" then
         PrintList()
     elseif cmd == "stats" then
@@ -690,25 +700,42 @@ SlashCmdList.SOULSOURCE = function(msg)
     elseif cmd == "announce" then
         db.announce = not db.announce
         Print("Capture announcements " .. (db.announce and "enabled." or "disabled."))
+        ns.RefreshOptions()
     elseif cmd == "say" then
         db.say = not db.say
         Print("Consumed shards are now announced " .. (db.say and "in /say." or "only to you."))
+        ns.RefreshOptions()
+    elseif cmd == "lucky" then
+        db.milestones = not db.milestones
+        Print("Lucky number shout-outs (Nice, Dubs!...) " .. (db.milestones and "enabled." or "disabled."))
+        ns.RefreshOptions()
     elseif cmd == "reset" then
-        db.stats = { total = 0, byName = {} }
-        db.history = {}
-        Print("Statistics and history cleared (shards keep their souls, and shard numbering continues).")
-        UpdateWindow()
+        ResetStats()
     else
         Print("commands:")
+        DEFAULT_CHAT_FRAME:AddMessage("  /soulsource - open the options window")
         DEFAULT_CHAT_FRAME:AddMessage("  /shards - toggle the Soul Shard window")
+        DEFAULT_CHAT_FRAME:AddMessage("  /shards tutorial - show the tutorial again")
         DEFAULT_CHAT_FRAME:AddMessage("  /shards list - print every shard and its soul")
         DEFAULT_CHAT_FRAME:AddMessage("  /shards history - recently captured souls")
         DEFAULT_CHAT_FRAME:AddMessage("  /shards stats - most-captured souls")
         DEFAULT_CHAT_FRAME:AddMessage("  /shards announce - toggle the chat message on capture")
         DEFAULT_CHAT_FRAME:AddMessage("  /shards say - toggle announcing consumed shards in /say")
+        DEFAULT_CHAT_FRAME:AddMessage("  /shards lucky - toggle Nice / Very Nice / Dubs! shout-outs")
         DEFAULT_CHAT_FRAME:AddMessage("  /shards reset - clear statistics and history")
     end
 end
+
+-------------------------------------------------------------------------------
+-- Shared with Options.lua, Minimap.lua and Tutorial.lua
+-------------------------------------------------------------------------------
+
+ns.Print = Print
+ns.ToggleWindow = ToggleWindow
+ns.ResetStats = ResetStats
+ns.SHARD_ICON = SHARD_ICON
+ns.loginHandlers = {}           -- UI files add function(db) callbacks, run at PLAYER_LOGIN
+ns.RefreshOptions = function() end -- replaced by Options.lua
 
 -------------------------------------------------------------------------------
 -- Events
@@ -741,12 +768,16 @@ events:SetScript("OnEvent", function(_, event, arg1, _, arg3)
         db.stats = db.stats or { total = 0, byName = {} }
         if db.announce == nil then db.announce = true end
         if db.say == nil then db.say = true end
+        if db.milestones == nil then db.milestones = true end
+        if db.tooltip == nil then db.tooltip = true end
+        db.minimap = db.minimap or { angle = 200, hide = false }
         -- Lifetime shard counter; never cleared by /shards reset.
         db.shardCount = db.shardCount or db.stats.total
     elseif event == "PLAYER_LOGIN" then
         playerGUID = UnitGUID("player")
         HookTooltips()
         if HookPlayerInput() then events:UnregisterEvent("PLAYER_REGEN_ENABLED") end
+        for _, init in ipairs(ns.loginHandlers) do init(db) end
     elseif event == "PLAYER_REGEN_ENABLED" then
         if HookPlayerInput() then events:UnregisterEvent("PLAYER_REGEN_ENABLED") end
     elseif event == "PLAYER_ENTERING_WORLD" then
