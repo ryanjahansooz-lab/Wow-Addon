@@ -14,7 +14,7 @@
 --   3. Tooltips for bag/bank slots and the /shards window read those records.
 --   4. Every captured soul gets a lifetime number for the character. When a
 --      shard is used up by a spell we announce its number, victim and location
---      in /say.
+--      in /say, and lucky numbers (69, 420, dubs, trips...) get a shout-out.
 
 local ADDON_NAME = ...
 
@@ -354,7 +354,31 @@ local function AddHistory(rec)
     while #db.history > HISTORY_MAX do table.remove(db.history) end
 end
 
+local VERY_NICE_NUMBERS = { [69420] = true, [42069] = true }
+local NICE_NUMBERS = { [69] = true, [420] = true }
+local REPEAT_NAMES = { "Dubs", "Trips", "Quads", "Quints", "Sexts", "Septs", "Octs", "Nons", "Decs" }
+
+-- "Very Nice", "Nice", or "Dubs!"/"Trips!"/... when the number ends in a run
+-- of the same digit (77 -> Dubs, 1333 -> Trips). nil for ordinary numbers.
+local function MilestoneMessage(number)
+    if not number then return end
+    if VERY_NICE_NUMBERS[number] then return "Very Nice" end
+    if NICE_NUMBERS[number] then return "Nice" end
+    local digits = tostring(number)
+    local last, run = digits:sub(-1), 1
+    while run < #digits and digits:sub(-run - 1, -run - 1) == last do run = run + 1 end
+    if run < 2 then return end
+    return (REPEAT_NAMES[run - 1] or (run .. " of a kind")) .. "!"
+end
+
+local function AnnounceMilestone(rec)
+    local msg = MilestoneMessage(rec.number)
+    if not msg then return end
+    if db.say then QueueSay(msg) else Print(msg) end
+end
+
 local function AnnounceCapture(rec)
+    AnnounceMilestone(rec)
     if not db.announce then return end
     local desc = Description(rec)
     Print(string.format("Captured soul %sof %s%s in %s.",

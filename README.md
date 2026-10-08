@@ -14,6 +14,11 @@ in the game.
 - **Shard numbers**: every soul you capture gets a number that counts up over
   your character's whole life (#1, #2, ... #842). The number shows in the
   tooltip, the window and chat, and `/shards reset` never resets it.
+- **Lucky numbers**: when a shard with a special number is made you /say it:
+  - #69 or #420: *Nice*
+  - #69420 or #42069: *Very Nice*
+  - numbers ending in a run of the same digit: *Dubs!* (#77, #100),
+    *Trips!* (#1333), *Quads!*, *Quints!*, *Sexts!*, *Septs!*, *Octs!*...
 - **/say when a shard is consumed**: when a spell (Healthstone, Soulstone,
   summons, Shadowburn, Soul Fire...) uses up a shard you say, for example:
   *Soul Shard #42 consumed by Create Healthstone: the soul of Defias Pillager, taken in Westfall - The Molsen Farm.*
@@ -32,7 +37,7 @@ in the game.
 | `/shards history` | Recently captured souls (and when each was used) |
 | `/shards stats` | Your most-captured souls |
 | `/shards announce` | Turn the capture chat message on or off |
-| `/shards say` | Turn the /say message for consumed shards on or off (when off, only you see it) |
+| `/shards say` | Turn /say messages (consumed shards and lucky numbers) on or off (when off, only you see it) |
 | `/shards reset` | Clear stats and history (shard numbering keeps going) |
 
 ### Install
