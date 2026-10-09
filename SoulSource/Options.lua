@@ -64,6 +64,7 @@ local function CreateCheckbox(parent, option, y)
     cb:SetScript("OnClick", function(self)
         local value = self:GetChecked() and true or false
         if option.set then option.set(value) else db[option.key] = value end
+        ns.Persist()
     end)
     cb:SetScript("OnEnter", function(self)
         GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
@@ -96,7 +97,7 @@ local function CreateOptionsFrame()
         local close = CreateFrame("Button", nil, f, "UIPanelCloseButton")
         close:SetPoint("TOPRIGHT", -4, -4)
     end
-    f:SetSize(420, 360)
+    f:SetSize(420, 390)
     f:SetPoint("CENTER")
     f:SetFrameStrata("DIALOG")
     f:SetMovable(true)
@@ -138,6 +139,13 @@ local function CreateOptionsFrame()
     local reset = CreateButton(f, "Reset Stats", 120, function() StaticPopup_Show("SOULSOURCE_RESET") end)
     reset:SetPoint("LEFT", tutorial, "RIGHT", 10, 0)
 
+    f.backup = f:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+    f.backup:SetPoint("BOTTOMLEFT", shards, "TOPLEFT", 0, 10)
+    f.backup:SetPoint("RIGHT", f, "RIGHT", -20, 0)
+    f.backup:SetJustifyH("LEFT")
+    f.backup:SetText("Forever beta: the game forgets addon data on restart, so your shard count and " ..
+        "settings are also kept in a character macro named \"SoulSource\". Don't delete it.")
+
     local hint = f:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
     hint:SetPoint("BOTTOM", 0, 20)
     hint:SetText("/soulsource opens this window  -  /shards opens your shard list")
@@ -148,6 +156,7 @@ end
 
 function ns.RefreshOptions()
     if not frame or not frame:IsShown() then return end
+    frame.backup:SetShown(ns.MacroBackupActive())
     frame.count:SetText(string.format("%d soul%s captured in this character's life",
         db.shardCount, db.shardCount == 1 and "" or "s"))
     for _, cb in ipairs(frame.checkboxes) do

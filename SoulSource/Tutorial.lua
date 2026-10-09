@@ -71,7 +71,6 @@ local function ShowPage()
 end
 
 local function Finish()
-    db.tutorialSeen = true
     frame:Hide()
 end
 
@@ -98,7 +97,12 @@ local function CreateTutorialFrame()
     f:SetScript("OnDragStart", f.StartMoving)
     f:SetScript("OnDragStop", f.StopMovingOrSizing)
     -- Closing early still counts as seen, so it doesn't pop up every login.
-    f:SetScript("OnHide", function() db.tutorialSeen = true end)
+    f:SetScript("OnHide", function()
+        if not db.tutorialSeen then
+            db.tutorialSeen = true
+            ns.Persist()
+        end
+    end)
     f:Hide()
     tinsert(UISpecialFrames, "SoulSourceTutorialFrame")
 
@@ -156,7 +160,8 @@ end
 table.insert(ns.loginHandlers, function(savedDB)
     db = savedDB
     if not db.tutorialSeen then
-        C_Timer.After(4, function()
+        -- Wait until the Forever macro backup has had a chance to restore tutorialSeen.
+        C_Timer.After(12, function()
             if not db.tutorialSeen then ns.ShowTutorial() end
         end)
     end

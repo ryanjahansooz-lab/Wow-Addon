@@ -60,13 +60,28 @@ in the game.
 | `/shards reset` | Clear stats and history (shard numbering keeps going) |
 
 ### Install
-Copy the `SoulSource` folder into `World of Warcraft/_classic_era_/Interface/AddOns/`
-(or the AddOns folder of the client you play), then restart the game or `/reload`.
+Copy the `SoulSource` folder into your game's AddOns folder, then restart the game or `/reload`:
+- **WoW: Forever beta:** `World of Warcraft/_classic_beta_/Interface/AddOns/`
+- **Classic Era:** `World of Warcraft/_classic_era_/Interface/AddOns/`
+
+Check that the path ends in `AddOns/SoulSource/SoulSource.toc`, not `AddOns/SoulSource/SoulSource/...`.
 
 ### Notes
-- Built for the Classic client (Interface 11507). If the game says the addon
-  is out of date, tick **Load out of date AddOns** or change the `## Interface:`
-  line in `SoulSource.toc` to match your client.
+- Works on **WoW: Forever** (Interface 16001) and **Classic Era** (Interface 11507).
+- Forever runs on the modern WoW engine and blocks the combat log for addons, so
+  SoulSource notices Drain Soul when you start channeling it and records your
+  target at that moment. A new shard that shows up while you channel (or within
+  3 seconds after) gets that soul. If Drain Soul wasn't involved but your target is
+  dead, the shard gets your dead target's soul.
+- In some situations (for example during boss fights) Forever hides unit details
+  from addons. Shards made then still get a number and location, but the victim
+  shows as "an unknown victim".
+- **Forever beta bug:** the beta client never loads addon saved data after a
+  restart. To keep your shard count and settings, SoulSource also stores them in a
+  character macro named **SoulSource**. Clicking it does nothing, but don't delete it.
+  The souls of shards you're already carrying can't fit in a macro, so after a
+  restart those shards show as "unknown soul" until Blizzard fixes the bug.
+- Shards found in a soul bag in Forever's reagent bag slot are tracked too.
 - Shards you already had before installing are marked as *unknown soul*.
 - Shards don't stack, so each one is tracked by its bag slot. If you swap two
   shards directly onto each other, their souls stay in the old slots.

@@ -1,15 +1,16 @@
 -- SoulSource: remembers which creature (or player) each Soul Shard came from.
 --
+-- Runs on WoW: Forever (interface 16001, a modern Retail-engine client) and on
+-- Classic Era. Forever blocks the combat log for addons, so nothing here uses it.
+--
 -- How it works
---   1. The combat log tells us when our Drain Soul is on a target and when that
---      target dies. A death while Drain Soul is ticking (or within a short grace
---      window after it fades, since the aura is removed right before UNIT_DIED)
---      becomes a "pending soul".
---   2. Soul Shards do not stack in Classic, so every shard lives in its own bag
---      slot. After every bag update we diff the set of slots holding a shard
---      against the slots we already know about:
+--   1. When we start channeling Drain Soul we take a snapshot of our target.
+--   2. Soul Shards do not stack, so every shard lives in its own bag slot. After
+--      every bag update we diff the set of slots holding a shard against the
+--      slots we already know about:
 --        * a new slot when a shard also vanished elsewhere = the shard was moved
---        * a genuinely new slot = a fresh shard, so it takes the oldest pending soul
+--        * a genuinely new slot = a fresh shard, which only Drain Soul makes, so
+--          it gets the soul of the target we were draining (or our dead target)
 --        * a vanished slot with no replacement = the shard was used up
 --   3. Tooltips for bag/bank slots and the /shards window read those records.
 --   4. Every captured soul gets a lifetime number for the character. When a
@@ -19,9 +20,10 @@
 local ADDON_NAME, ns = ...
 
 local SHARD_ITEM_ID = 6265
-local DRAIN_SOUL_SPELL_IDS = { 1120, 8288, 8289, 11675 }
-local KILL_GRACE = 1.5    -- seconds after Drain Soul fades that a death still counts
-local PENDING_TTL = 6     -- seconds a recorded kill waits for its shard to appear
+local SHARD_NAME_FALLBACK = "Soul Shard"
+local DRAIN_SOUL_SPELL_IDS = { 1120, 8288, 8289, 11675, 198590 }
+local DRAIN_SOUL_NAME_FALLBACK = "Drain Soul"
+local DRAIN_GRACE = 3     -- seconds after Drain Soul stops that a new shard still belongs to its target
 local CONSUME_WINDOW = 3  -- seconds between a spell cast and a shard vanishing for it to count as consumed
 local HISTORY_MAX = 100
 
@@ -31,15 +33,16 @@ local GRAY = "|cff9d9d9d"
 
 local GetContainerNumSlots = (C_Container and C_Container.GetContainerNumSlots) or GetContainerNumSlots
 local GetContainerItemID = (C_Container and C_Container.GetContainerItemID) or GetContainerItemID
-local COMBATLOG_PLAYER = COMBATLOG_OBJECT_TYPE_PLAYER or 0x00000400
-local BANK_ID = BANK_CONTAINER or -1
-local NUM_BAGS = NUM_BAG_SLOTS or 4
-local NUM_BANK_BAGS = NUM_BANKBAGSLOTS or 6
+local GetContainerItemLink = (C_Container and C_Container.GetContainerItemLink) or GetContainerItemLink
+local GetSpellName = (C_Spell and C_Spell.GetSpellName) or function(id)
+    return GetSpellInfo and (GetSpellInfo(id))
+end
+local GetItemNameByID = (C_Item and C_Item.GetItemNameByID) or function(id)
+    return GetItemInfo and (GetItemInfo(id))
+end
 
 local db                 -- SoulSourceCharDB
-local playerGUID
-local drainTargets = {}  -- guid -> victim info while our Drain Soul is (or just was) on it
-local pendingSouls = {}  -- victims that died to Drain Soul and are waiting for their shard
+local drain              -- { victim = info, active = bool, stoppedAt = GetTime() } for our latest Drain Soul
 local bankOpen = false
 local bagsReady = false
 local lastCast           -- { at = GetTime(), name = spell name } for the player's latest successful cast
@@ -49,16 +52,57 @@ local sayQueue = {}      -- /say messages waiting for a key press or click
 -- Helpers
 -------------------------------------------------------------------------------
 
-local drainSoulIDs, drainSoulNames = {}, {}
+-- Forever (like Retail since Midnight) can hand addons "secret" values that
+-- throw when compared or concatenated. Treat them as unknown.
+local function Plain(v)
+    if issecretvalue and issecretvalue(v) then return nil end
+    return v
+end
+
+local function SafeCall(fn, ...)
+    if not fn then return nil end
+    local ok, a, b, c = pcall(fn, ...)
+    if not ok then return nil end
+    return Plain(a), Plain(b), Plain(c)
+end
+
+local drainSoulIDs, drainSoulNames = {}, { [DRAIN_SOUL_NAME_FALLBACK] = true }
 for _, id in ipairs(DRAIN_SOUL_SPELL_IDS) do
     drainSoulIDs[id] = true
-    local name = GetSpellInfo and GetSpellInfo(id)
+    local name = SafeCall(GetSpellName, id)
     if name then drainSoulNames[name] = true end
 end
 
--- Classic combat logs may report spellId as 0, so fall back to the localized name.
-local function IsDrainSoul(spellId, spellName)
-    return drainSoulIDs[spellId] or (spellName and drainSoulNames[spellName]) or false
+local function IsDrainSoul(spellID, spellName)
+    spellID, spellName = Plain(spellID), Plain(spellName)
+    if spellID and drainSoulIDs[spellID] then return true end
+    if not spellName and spellID then spellName = SafeCall(GetSpellName, spellID) end
+    return spellName ~= nil and drainSoulNames[spellName] == true
+end
+
+-- Soul Shards are found by item ID, or by name in case Forever uses a new item.
+local shardItemIDs = { [SHARD_ITEM_ID] = true }
+local notShardIDs = {}
+local shardNames = { [SHARD_NAME_FALLBACK] = true }
+do
+    local name = SafeCall(GetItemNameByID, SHARD_ITEM_ID)
+    if name then shardNames[name] = true end
+end
+
+local function IsShardSlot(bag, slot)
+    local itemID = SafeCall(GetContainerItemID, bag, slot)
+    if not itemID then return false end
+    if shardItemIDs[itemID] then return true end
+    if notShardIDs[itemID] then return false end
+    local link = SafeCall(GetContainerItemLink, bag, slot)
+    local name = link and link:match("%[(.-)%]")
+    if not name then return false end -- item not cached yet; ask again next scan
+    if shardNames[name] then
+        shardItemIDs[itemID] = true
+        return true
+    end
+    notShardIDs[itemID] = true
+    return false
 end
 
 local function Print(msg)
@@ -74,10 +118,6 @@ local function ParseKey(key)
     return tonumber(bag), tonumber(slot)
 end
 
-local function IsBankBag(bag)
-    return bag == BANK_ID or bag > NUM_BAGS
-end
-
 local function FormatAge(seconds)
     seconds = math.max(0, seconds or 0)
     if seconds < 60 then return "just now" end
@@ -90,13 +130,13 @@ local function FormatAge(seconds)
 end
 
 local function ColoredName(rec)
-    if rec.isPlayer and rec.class then
+    if rec.isPlayer and rec.class and rec.name then
         local c = (CUSTOM_CLASS_COLORS or RAID_CLASS_COLORS or {})[rec.class]
         if c then
             return string.format("|cff%02x%02x%02x%s|r", c.r * 255, c.g * 255, c.b * 255, rec.name)
         end
     end
-    return SOUL_COLOR .. (rec.name or UNKNOWN or "Unknown") .. "|r"
+    return SOUL_COLOR .. (rec.name or "an unknown victim") .. "|r"
 end
 
 local function NumberTag(rec)
@@ -135,113 +175,120 @@ local function Location(rec)
     return rec.zone or "Unknown location"
 end
 
-local function SlotLabel(key)
-    local bag, slot = ParseKey(key)
-    if bag == BANK_ID then return "Bank slot " .. slot end
-    if bag > NUM_BAGS then return string.format("Bank bag %d, slot %d", bag - NUM_BAGS, slot) end
-    if bag == 0 then return "Backpack, slot " .. slot end
-    return string.format("Bag %d, slot %d", bag, slot)
-end
-
 -------------------------------------------------------------------------------
--- Victim tracking (combat log)
+-- Containers: Forever uses modern bag IDs (a reagent slot that holds the soul
+-- bag, and bank tabs); Classic Era uses the old numbering.
 -------------------------------------------------------------------------------
 
-local function FindUnitByGUID(guid)
-    for _, unit in ipairs({ "target", "mouseover", "focus", "pettarget", "targettarget" }) do
-        if UnitExists(unit) and UnitGUID(unit) == guid then return unit end
-    end
-    for i = 1, 40 do
-        local unit = "nameplate" .. i
-        if UnitExists(unit) and UnitGUID(unit) == guid then return unit end
-    end
-end
-
-local function DescribeVictim(guid, name, flags)
-    local info = {
-        guid = guid,
-        name = name,
-        isPlayer = bit.band(flags or 0, COMBATLOG_PLAYER) > 0,
-    }
-    local unit = FindUnitByGUID(guid)
-    if unit then
-        info.name = UnitName(unit) or name
-        info.level = UnitLevel(unit)
-        info.classification = UnitClassification(unit)
-        info.creatureType = UnitCreatureType(unit)
-        if UnitIsPlayer(unit) then
-            info.isPlayer = true
-            info.className, info.class = UnitClass(unit)
-            info.race = UnitRace(unit)
+local carriedBags, bankBags, bagLabels = {}, {}, {}
+do
+    local B = Enum and Enum.BagIndex
+    if B and B.Backpack then
+        for i = 0, 4 do carriedBags[#carriedBags + 1] = i end
+        if B.ReagentBag then
+            carriedBags[#carriedBags + 1] = B.ReagentBag
+            bagLabels[B.ReagentBag] = "Reagent bag"
+        end
+        for i = 1, 6 do
+            local tab = B["CharacterBankTab_" .. i]
+            if tab then
+                bankBags[#bankBags + 1] = tab
+                bagLabels[tab] = "Bank tab " .. i
+            end
+        end
+        if #bankBags == 0 and B.Bank then
+            bankBags[#bankBags + 1] = B.Bank
+            bagLabels[B.Bank] = "Bank"
+            for i = 1, 7 do
+                local bag = B["BankBag_" .. i]
+                if bag then
+                    bankBags[#bankBags + 1] = bag
+                    bagLabels[bag] = "Bank bag " .. i
+                end
+            end
+        end
+    else
+        local numBags = NUM_BAG_SLOTS or 4
+        for i = 0, numBags do carriedBags[#carriedBags + 1] = i end
+        local bank = BANK_CONTAINER or -1
+        bankBags[#bankBags + 1] = bank
+        bagLabels[bank] = "Bank"
+        for i = 1, NUM_BANKBAGSLOTS or 6 do
+            bankBags[#bankBags + 1] = numBags + i
+            bagLabels[numBags + i] = "Bank bag " .. i
         end
     end
+    bagLabels[0] = "Backpack"
+end
+local BANK_ID = BANK_CONTAINER or -1
+
+local function SlotLabel(key)
+    local bag, slot = ParseKey(key)
+    return string.format("%s, slot %d", bagLabels[bag] or ("Bag " .. bag), slot)
+end
+
+-------------------------------------------------------------------------------
+-- Victim tracking (Drain Soul channel)
+-------------------------------------------------------------------------------
+
+local function DescribeUnit(unit)
+    if not SafeCall(UnitExists, unit) then return nil end
+    local info = {
+        guid = SafeCall(UnitGUID, unit),
+        name = SafeCall(UnitName, unit),
+        level = SafeCall(UnitLevel, unit),
+        classification = SafeCall(UnitClassification, unit),
+        creatureType = SafeCall(UnitCreatureType, unit),
+    }
+    if SafeCall(UnitIsPlayer, unit) then
+        info.isPlayer = true
+        info.className, info.class = SafeCall(UnitClass, unit)
+        info.race = SafeCall(UnitRace, unit)
+    end
+    if not info.name then return nil end
     return info
 end
 
--- Fill in anything we could not see when Drain Soul first landed.
-local function RefreshVictim(info)
-    if info.level then return end
-    local unit = FindUnitByGUID(info.guid)
-    if unit then
-        local fresh = DescribeVictim(info.guid, info.name, info.isPlayer and COMBATLOG_PLAYER or 0)
-        for k, v in pairs(fresh) do info[k] = v end
+local function OnChannelStart(spellID)
+    local name
+    if not Plain(spellID) then
+        name = SafeCall(UnitChannelInfo, "player")
+    end
+    if not IsDrainSoul(spellID, name) then return end
+    drain = { victim = DescribeUnit("target"), active = true }
+end
+
+local function OnChannelStop()
+    if not drain or not drain.active then return end
+    drain.active = false
+    drain.stoppedAt = GetTime()
+    -- Fill in anything we could not read when the channel started.
+    local victim = drain.victim
+    local now = DescribeUnit("target")
+    if now and (not victim or (victim.guid and victim.guid == now.guid) or (not victim.guid and victim.name == now.name)) then
+        for k, v in pairs(now) do
+            if victim and victim[k] == nil then victim[k] = v end
+        end
+        drain.victim = victim or now
     end
 end
 
-local function OnVictimDied(guid)
-    local info = drainTargets[guid]
-    if not info then return end
-    drainTargets[guid] = nil
-    if info.fadedAt and GetTime() - info.fadedAt > KILL_GRACE then return end
-
-    info.fadedAt = nil
-    info.time = time()
-    info.zone = GetRealZoneText()
-    info.subzone = GetSubZoneText()
-    info.expires = GetTime() + PENDING_TTL
-    pendingSouls[#pendingSouls + 1] = info
-end
-
-local function OnCombatLog()
-    local _, subevent, _, sourceGUID, _, _, _, destGUID, destName, destFlags, _, spellId, spellName =
-        CombatLogGetCurrentEventInfo()
-
-    if subevent == "UNIT_DIED" or subevent == "PARTY_KILL" then
-        OnVictimDied(destGUID)
-        return
+-- Whose soul is the shard that just appeared? nil when nothing suggests a
+-- Drain Soul kill (a shard from the mailbox or a trade, for example).
+local function TakeVictim()
+    local victim
+    if drain and (drain.active or GetTime() - (drain.stoppedAt or 0) <= DRAIN_GRACE) then
+        victim = drain.victim or {}
+        drain = nil
+    elseif SafeCall(UnitIsDead, "target") then
+        victim = DescribeUnit("target") or {}
+    else
+        return nil
     end
-
-    if sourceGUID ~= playerGUID or not IsDrainSoul(spellId, spellName) then return end
-
-    if subevent == "SPELL_AURA_APPLIED" or subevent == "SPELL_AURA_REFRESH" then
-        local info = drainTargets[destGUID]
-        if info then
-            info.fadedAt = nil
-            RefreshVictim(info)
-        else
-            drainTargets[destGUID] = DescribeVictim(destGUID, destName, destFlags)
-        end
-    elseif subevent == "SPELL_AURA_REMOVED" then
-        local info = drainTargets[destGUID]
-        if info then
-            RefreshVictim(info)
-            info.fadedAt = GetTime()
-        end
-    end
-end
-
-local function PruneStale()
-    local now = GetTime()
-    for guid, info in pairs(drainTargets) do
-        if info.fadedAt and now - info.fadedAt > KILL_GRACE then
-            drainTargets[guid] = nil
-        end
-    end
-    for i = #pendingSouls, 1, -1 do
-        if pendingSouls[i].expires < now then
-            table.remove(pendingSouls, i)
-        end
-    end
+    victim.time = time()
+    victim.zone = SafeCall(GetRealZoneText)
+    victim.subzone = SafeCall(GetSubZoneText)
+    return victim
 end
 
 -------------------------------------------------------------------------------
@@ -250,10 +297,9 @@ end
 
 local function ContainersToScan()
     local list = {}
-    for bag = 0, NUM_BAGS do list[#list + 1] = bag end
+    for _, bag in ipairs(carriedBags) do list[#list + 1] = bag end
     if bankOpen then
-        list[#list + 1] = BANK_ID
-        for bag = NUM_BAGS + 1, NUM_BAGS + NUM_BANK_BAGS do list[#list + 1] = bag end
+        for _, bag in ipairs(bankBags) do list[#list + 1] = bag end
     end
     return list
 end
@@ -278,19 +324,27 @@ end
 -- /say announcements
 -------------------------------------------------------------------------------
 
+local SendChat = (C_ChatInfo and C_ChatInfo.SendChatMessage) or SendChatMessage
+
+local function ChatLocked()
+    return C_ChatInfo and C_ChatInfo.InChatMessagingLockdown and SafeCall(C_ChatInfo.InChatMessagingLockdown) or false
+end
+
 -- Outside instances the game only lets addons /say during a key press or
 -- mouse click, so messages wait in a queue until the player's next input.
+-- Forever can also lock addon chat entirely (e.g. during boss fights); the
+-- queue simply waits that out.
 local function FlushSay()
-    if #sayQueue == 0 then return end
+    if #sayQueue == 0 or ChatLocked() then return end
     for _, msg in ipairs(sayQueue) do
-        SendChatMessage(msg, "SAY")
+        pcall(SendChat, msg, "SAY")
     end
     wipe(sayQueue)
 end
 
 local function QueueSay(msg)
     sayQueue[#sayQueue + 1] = msg
-    if IsInInstance() then FlushSay() end
+    if SafeCall(IsInInstance) then FlushSay() end
 end
 
 local inputFrame
@@ -299,12 +353,12 @@ local function HookPlayerInput()
         inputFrame = CreateFrame("Frame", nil, UIParent)
         inputFrame:SetScript("OnKeyDown", FlushSay)
         WorldFrame:HookScript("OnMouseDown", FlushSay)
-        hooksecurefunc("UseAction", FlushSay)
+        if UseAction then hooksecurefunc("UseAction", FlushSay) end
     end
     -- Keyboard propagation can't be changed in combat; retried on PLAYER_REGEN_ENABLED.
     if InCombatLockdown() then return false end
     inputFrame:EnableKeyboard(true)
-    inputFrame:SetPropagateKeyboardInput(true)
+    if inputFrame.SetPropagateKeyboardInput then pcall(inputFrame.SetPropagateKeyboardInput, inputFrame, true) end
     return true
 end
 
@@ -314,10 +368,10 @@ local function AnnounceConsumed(rec, spellName)
     local msg
     if rec.number then
         msg = string.format("Soul Shard #%d consumed by %s: the soul of %s, taken in %s.",
-            rec.number, spellName, rec.name or "?", where)
+            rec.number, spellName, rec.name or "an unknown victim", where)
     else
         msg = string.format("Soul Shard consumed by %s: the soul of %s, taken in %s.",
-            spellName, rec.name or "?", where)
+            spellName, rec.name or "an unknown victim", where)
     end
     if db.say then QueueSay(msg) else Print(msg) end
 end
@@ -387,17 +441,18 @@ end
 
 local UpdateWindow -- defined below
 
+local firstScanDone = false
+
 local function ScanBags()
     -- Bag contents are not available for a moment after login; scanning then
     -- would make every known shard look "used".
-    if not bagsReady or (GetContainerNumSlots(0) or 0) == 0 then return end
-    PruneStale()
+    if not bagsReady or (SafeCall(GetContainerNumSlots, 0) or 0) == 0 then return false end
 
     local scanned, present = {}, {}
     for _, bag in ipairs(ContainersToScan()) do
         scanned[bag] = true
-        for slot = 1, GetContainerNumSlots(bag) or 0 do
-            if GetContainerItemID(bag, slot) == SHARD_ITEM_ID then
+        for slot = 1, SafeCall(GetContainerNumSlots, bag) or 0 do
+            if IsShardSlot(bag, slot) then
                 present[SlotKey(bag, slot)] = true
             end
         end
@@ -411,17 +466,17 @@ local function ScanBags()
     for key in pairs(present) do
         if not db.shards[key] then added[#added + 1] = key end
     end
-    if #removed == 0 and #added == 0 then return end
+    if #removed == 0 and #added == 0 then return true end
     table.sort(removed)
     table.sort(added)
 
-    -- Shards appearing beyond the number that vanished are newly created.
-    -- The game puts new loot in the first free slot, so the earliest slots get the souls.
+    -- Shards appearing beyond the number that vanished are new. The very first
+    -- scan after login only finds shards we have no record of, so those are
+    -- "unknown" rather than fresh captures.
     local fresh = #added - #removed
     local changed = false
-    local i = 1
-    while fresh > 0 and i <= #added do
-        local victim = table.remove(pendingSouls, 1)
+    while fresh > 0 and #added > 0 do
+        local victim = firstScanDone and TakeVictim()
         local rec
         if victim then
             rec = MakeRecord(victim)
@@ -431,11 +486,11 @@ local function ScanBags()
             db.stats.byName[rec.name or "?"] = (db.stats.byName[rec.name or "?"] or 0) + 1
             AddHistory(rec)
             AnnounceCapture(rec)
+            ns.Persist()
         else
             rec = { unknown = true }
         end
-        db.shards[added[i]] = rec
-        table.remove(added, i)
+        db.shards[table.remove(added, 1)] = rec
         fresh = fresh - 1
         changed = true
     end
@@ -454,6 +509,16 @@ local function ScanBags()
     end
 
     if changed and UpdateWindow then UpdateWindow() end
+    return true
+end
+
+local function FirstScan()
+    bagsReady = true
+    if ScanBags() then
+        firstScanDone = true
+    else
+        C_Timer.After(2, FirstScan)
+    end
 end
 
 -------------------------------------------------------------------------------
@@ -465,7 +530,7 @@ local function AddShardLines(tooltip, key)
     if not rec then return end
     if rec.unknown then
         tooltip:AddLine("Soul origin unknown", 0.6, 0.6, 0.6)
-        tooltip:AddLine("(obtained before SoulSource was tracking)", 0.6, 0.6, 0.6)
+        tooltip:AddLine("(SoulSource has no record of this shard)", 0.6, 0.6, 0.6)
     else
         tooltip:AddLine(NumberTag(rec) .. "Soul of " .. ColoredName(rec), 1, 1, 1)
         local desc = Description(rec)
@@ -479,13 +544,16 @@ local function AddShardLines(tooltip, key)
 end
 
 local function HookTooltips()
-    hooksecurefunc(GameTooltip, "SetBagItem", function(tooltip, bag, slot)
-        AddShardLines(tooltip, SlotKey(bag, slot))
-    end)
-    -- Main bank slots are shown through SetInventoryItem by the default UI.
+    if GameTooltip.SetBagItem then
+        hooksecurefunc(GameTooltip, "SetBagItem", function(tooltip, bag, slot)
+            AddShardLines(tooltip, SlotKey(bag, slot))
+        end)
+    end
+    -- Classic's main bank slots are shown through SetInventoryItem.
+    if not (GameTooltip.SetInventoryItem and BankButtonIDToInvSlotID) then return end
     hooksecurefunc(GameTooltip, "SetInventoryItem", function(tooltip, unit, invSlot)
-        if unit ~= "player" or not BankButtonIDToInvSlotID then return end
-        for slot = 1, GetContainerNumSlots(BANK_ID) or 0 do
+        if unit ~= "player" then return end
+        for slot = 1, SafeCall(GetContainerNumSlots, BANK_ID) or 0 do
             if BankButtonIDToInvSlotID(slot) == invSlot then
                 AddShardLines(tooltip, SlotKey(BANK_ID, slot))
                 return
@@ -602,7 +670,7 @@ function UpdateWindow()
         local row, rec = GetRow(i), entry.rec
         if rec.unknown then
             row.line1:SetText(GRAY .. "Unknown soul|r")
-            row.line2:SetText(GRAY .. SlotLabel(entry.key) .. " - obtained before tracking|r")
+            row.line2:SetText(GRAY .. SlotLabel(entry.key) .. " - no record of where it came from|r")
         else
             local desc = Description(rec)
             row.line1:SetText(NumberTag(rec) .. ColoredName(rec) .. (desc ~= "" and (GRAY .. "  " .. desc .. "|r") or ""))
@@ -628,6 +696,7 @@ local function ResetStats()
     db.history = {}
     Print("Statistics and history cleared (shards keep their souls, and shard numbering continues).")
     UpdateWindow()
+    ns.Persist()
 end
 
 -------------------------------------------------------------------------------
@@ -701,14 +770,17 @@ SlashCmdList.SOULSOURCESHARDS = function(msg)
         db.announce = not db.announce
         Print("Capture announcements " .. (db.announce and "enabled." or "disabled."))
         ns.RefreshOptions()
+        ns.Persist()
     elseif cmd == "say" then
         db.say = not db.say
         Print("Consumed shards are now announced " .. (db.say and "in /say." or "only to you."))
         ns.RefreshOptions()
+        ns.Persist()
     elseif cmd == "lucky" then
         db.milestones = not db.milestones
         Print("Lucky number shout-outs (Nice, Dubs!...) " .. (db.milestones and "enabled." or "disabled."))
         ns.RefreshOptions()
+        ns.Persist()
     elseif cmd == "reset" then
         ResetStats()
     else
@@ -736,31 +808,50 @@ ns.ResetStats = ResetStats
 ns.SHARD_ICON = SHARD_ICON
 ns.loginHandlers = {}           -- UI files add function(db) callbacks, run at PLAYER_LOGIN
 ns.RefreshOptions = function() end -- replaced by Options.lua
+ns.Persist = function() end        -- replaced by Persist.lua
+ns.OnCombatEnded = function() end  -- replaced by Persist.lua
+ns.MacroBackupActive = function() return false end -- replaced by Persist.lua
+ns.UpdateMinimapButton = function() end           -- replaced by Minimap.lua
 
 -------------------------------------------------------------------------------
 -- Events
 -------------------------------------------------------------------------------
 
 local events = CreateFrame("Frame")
-events:RegisterEvent("ADDON_LOADED")
-events:RegisterEvent("PLAYER_LOGIN")
-events:RegisterEvent("PLAYER_ENTERING_WORLD")
-events:RegisterEvent("COMBAT_LOG_EVENT_UNFILTERED")
-events:RegisterEvent("BAG_UPDATE_DELAYED")
-events:RegisterEvent("PLAYERBANKSLOTS_CHANGED")
-events:RegisterEvent("BANKFRAME_OPENED")
-events:RegisterEvent("BANKFRAME_CLOSED")
-events:RegisterEvent("UNIT_SPELLCAST_SUCCEEDED")
-events:RegisterEvent("PLAYER_REGEN_ENABLED")
+-- Registering an event the client doesn't know throws on Forever, so try each.
+for _, event in ipairs({
+    "ADDON_LOADED", "PLAYER_LOGIN", "PLAYER_ENTERING_WORLD", "PLAYER_REGEN_ENABLED",
+    "BAG_UPDATE_DELAYED", "PLAYERBANKSLOTS_CHANGED", "BANKFRAME_OPENED", "BANKFRAME_CLOSED",
+    "PLAYER_INTERACTION_MANAGER_FRAME_SHOW", "PLAYER_INTERACTION_MANAGER_FRAME_HIDE",
+}) do
+    pcall(events.RegisterEvent, events, event)
+end
+for _, event in ipairs({ "UNIT_SPELLCAST_CHANNEL_START", "UNIT_SPELLCAST_CHANNEL_STOP", "UNIT_SPELLCAST_SUCCEEDED" }) do
+    if not (events.RegisterUnitEvent and pcall(events.RegisterUnitEvent, events, event, "player")) then
+        pcall(events.RegisterEvent, events, event)
+    end
+end
+
+local BANKER = Enum and Enum.PlayerInteractionType and Enum.PlayerInteractionType.Banker
+local inputHooked = false
+
+local function SetBankOpen(open)
+    bankOpen = open
+    if open then ScanBags() end
+end
 
 events:SetScript("OnEvent", function(_, event, arg1, _, arg3)
-    if event == "COMBAT_LOG_EVENT_UNFILTERED" then
-        OnCombatLog()
+    if event == "UNIT_SPELLCAST_CHANNEL_START" then
+        if arg1 == "player" then OnChannelStart(arg3) end
+    elseif event == "UNIT_SPELLCAST_CHANNEL_STOP" then
+        if arg1 == "player" then OnChannelStop() end
     elseif event == "UNIT_SPELLCAST_SUCCEEDED" then
         if arg1 == "player" then
-            lastCast = { at = GetTime(), name = (arg3 and GetSpellInfo(arg3)) or "a spell" }
+            local id = Plain(arg3)
+            lastCast = { at = GetTime(), name = (id and SafeCall(GetSpellName, id)) or "a spell" }
         end
     elseif event == "ADDON_LOADED" and arg1 == ADDON_NAME then
+        ns.hadSavedVariables = SoulSourceCharDB ~= nil
         SoulSourceCharDB = SoulSourceCharDB or {}
         db = SoulSourceCharDB
         db.shards = db.shards or {}
@@ -774,24 +865,22 @@ events:SetScript("OnEvent", function(_, event, arg1, _, arg3)
         -- Lifetime shard counter; never cleared by /shards reset.
         db.shardCount = db.shardCount or db.stats.total
     elseif event == "PLAYER_LOGIN" then
-        playerGUID = UnitGUID("player")
         HookTooltips()
-        if HookPlayerInput() then events:UnregisterEvent("PLAYER_REGEN_ENABLED") end
+        inputHooked = HookPlayerInput()
         for _, init in ipairs(ns.loginHandlers) do init(db) end
     elseif event == "PLAYER_REGEN_ENABLED" then
-        if HookPlayerInput() then events:UnregisterEvent("PLAYER_REGEN_ENABLED") end
+        if not inputHooked then inputHooked = HookPlayerInput() end
+        ns.OnCombatEnded()
     elseif event == "PLAYER_ENTERING_WORLD" then
-        if not bagsReady then
-            C_Timer.After(2, function()
-                bagsReady = true
-                ScanBags()
-            end)
-        end
+        if not bagsReady then C_Timer.After(2, FirstScan) end
     elseif event == "BANKFRAME_OPENED" then
-        bankOpen = true
-        ScanBags()
+        SetBankOpen(true)
     elseif event == "BANKFRAME_CLOSED" then
-        bankOpen = false
+        SetBankOpen(false)
+    elseif event == "PLAYER_INTERACTION_MANAGER_FRAME_SHOW" then
+        if BANKER and arg1 == BANKER then SetBankOpen(true) end
+    elseif event == "PLAYER_INTERACTION_MANAGER_FRAME_HIDE" then
+        if BANKER and arg1 == BANKER then SetBankOpen(false) end
     else -- BAG_UPDATE_DELAYED, PLAYERBANKSLOTS_CHANGED
         ScanBags()
     end
