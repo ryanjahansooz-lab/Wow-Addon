@@ -42,8 +42,8 @@ in the game.
   The window also has buttons for the shard list, the tutorial and resetting stats.
 - **Minimap button**: left-click opens the options, right-click opens the shard
   list, and you can drag it around the edge of the minimap.
-- **Tutorial**: a short walkthrough that pops up the first time you log in.
-  Open it again from the options window or with `/shards tutorial`.
+- **Tutorial**: a short walkthrough of everything SoulSource does. It never
+  opens by itself; open it from the options window or with `/shards tutorial`.
 
 ### Commands
 | Command | What it does |

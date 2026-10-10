@@ -1,9 +1,8 @@
--- SoulSource tutorial: a short paged walkthrough shown on first login and
--- any time from the options window or /shards tutorial.
+-- SoulSource tutorial: a short paged walkthrough, opened from the options
+-- window or with /shards tutorial. It never opens by itself.
 
 local ADDON_NAME, ns = ...
 
-local db
 local frame
 local page = 1
 
@@ -12,7 +11,7 @@ local PAGES = {
         title = "Welcome to SoulSource",
         icon = "Interface\\Icons\\INV_Misc_Gem_Amethyst_02",
         text = "SoulSource remembers whose soul is trapped inside every Soul Shard you make.\n\n" ..
-            "This quick tour shows you what it does. You can open it again any time from the " ..
+            "This quick tour shows you what it does. You can open it any time from the " ..
             "options window (/soulsource) or with /shards tutorial.",
     },
     {
@@ -96,13 +95,6 @@ local function CreateTutorialFrame()
     f:RegisterForDrag("LeftButton")
     f:SetScript("OnDragStart", f.StartMoving)
     f:SetScript("OnDragStop", f.StopMovingOrSizing)
-    -- Closing early still counts as seen, so it doesn't pop up every login.
-    f:SetScript("OnHide", function()
-        if not db.tutorialSeen then
-            db.tutorialSeen = true
-            ns.Persist()
-        end
-    end)
     f:Hide()
     tinsert(UISpecialFrames, "SoulSourceTutorialFrame")
 
@@ -157,12 +149,3 @@ function ns.ShowTutorial()
     frame:Show()
 end
 
-table.insert(ns.loginHandlers, function(savedDB)
-    db = savedDB
-    if not db.tutorialSeen then
-        -- Wait until the Forever macro backup has had a chance to restore tutorialSeen.
-        C_Timer.After(12, function()
-            if not db.tutorialSeen then ns.ShowTutorial() end
-        end)
-    end
-end)
