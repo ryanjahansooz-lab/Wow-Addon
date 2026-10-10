@@ -29,9 +29,9 @@ end
 
 local function Encode()
     local function flag(v) return v and "1" or "0" end
-    return string.format("n=%d;st=%d;a=%s;s=%s;m=%s;t=%s;mm=%d,%s",
+    return string.format("n=%d;st=%d;a=%s;s=%s;m=%s;t=%s;w=%s;mm=%d,%s",
         db.shardCount, db.stats.total, flag(db.announce), flag(db.say), flag(db.milestones),
-        flag(db.tooltip), math.floor((db.minimap.angle or 200) + 0.5),
+        flag(db.tooltip), flag(db.stoneWhisper), math.floor((db.minimap.angle or 200) + 0.5),
         flag(db.minimap.hide))
 end
 
@@ -48,6 +48,7 @@ local function Apply(data)
         db.say = t.s ~= "0"
         db.milestones = t.m ~= "0"
         db.tooltip = t.t ~= "0"
+        db.stoneWhisper = t.w ~= "0"
         local angle, hide = (t.mm or ""):match("^(-?%d+),(%d)$")
         if angle then
             db.minimap.angle = tonumber(angle)

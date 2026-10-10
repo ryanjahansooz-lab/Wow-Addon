@@ -19,10 +19,15 @@ in the game.
   - #69420 or #42069: *Very Nice*
   - numbers ending in a run of the same digit: *Dubs!* (#77, #100),
     *Trips!* (#1333), *Quads!*, *Quints!*, *Sexts!*, *Septs!*, *Octs!*...
-- **/say when a shard is consumed**: when a spell (Healthstone, Soulstone,
-  summons, Shadowburn, Soul Fire...) uses up a shard you say, for example:
-  *Soul Shard #42 consumed by Create Healthstone: the soul of Defias Pillager, taken in Westfall - The Molsen Farm.*
+- **/say when a shard is consumed**: when a spell like a summon, Shadowburn or
+  Soul Fire uses up a shard you say, for example:
+  *Soul Shard #42 consumed by Summon Voidwalker: the soul of Defias Pillager, taken in Westfall - The Molsen Farm.*
   Shards you delete, sell or trade aren't announced.
+- **Healthstones (cookies) and Soulstones carry the soul**: making one doesn't
+  say anything in public. The stone remembers its shard's soul (shown in its
+  tooltip). When you trade it to a player, or use a Soulstone on a player,
+  they get a whisper, for example:
+  *The Healthstone I just gave you holds the soul of Defias Pillager (Soul Shard #42), taken in Westfall.*
 - **Chat message** when a soul is captured (turn it off with `/shards announce`).
 - **`/shards` window** lists every shard you're carrying, newest first, with its
   soul, where it was taken, how long ago, and which bag slot it's in.
@@ -36,6 +41,7 @@ in the game.
   - Announce captured souls in chat
   - Show the soul in Soul Shard tooltips
   - /say when a shard is consumed
+  - Whisper a Healthstone/Soulstone's soul to whoever gets it
   - /say lucky shard numbers (Nice, Very Nice, Dubs!...): untick this to turn off just the lucky-number messages
   - Show the minimap button
 
@@ -56,6 +62,7 @@ in the game.
 | `/shards stats` | Your most-captured souls |
 | `/shards announce` | Turn the capture chat message on or off |
 | `/shards say` | Turn the /say message for consumed shards on or off (when off, only you see it) |
+| `/shards whisper` | Turn the Healthstone/Soulstone whisper on or off (when off, only you see it) |
 | `/shards lucky` | Turn the Nice / Very Nice / Dubs! messages on or off |
 | `/shards reset` | Clear stats and history (shard numbering keeps going) |
 

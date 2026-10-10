@@ -46,7 +46,7 @@ local drain              -- { victim = info, active = bool, stoppedAt = GetTime(
 local bankOpen = false
 local bagsReady = false
 local lastCast           -- { at = GetTime(), name = spell name } for the player's latest successful cast
-local sayQueue = {}      -- /say messages waiting for a key press or click
+local chatQueue = {}     -- { msg, chatType, target } waiting until the game lets us send them
 
 -------------------------------------------------------------------------------
 -- Helpers
@@ -331,20 +331,45 @@ local function ChatLocked()
 end
 
 -- Outside instances the game only lets addons /say during a key press or
--- mouse click, so messages wait in a queue until the player's next input.
--- Forever can also lock addon chat entirely (e.g. during boss fights); the
--- queue simply waits that out.
-local function FlushSay()
-    if #sayQueue == 0 or ChatLocked() then return end
-    for _, msg in ipairs(sayQueue) do
-        pcall(SendChat, msg, "SAY")
+-- mouse click, so /say messages wait in a queue until the player's next input.
+-- Whispers have no such rule and go out straight away. Forever can also lock
+-- addon chat entirely (e.g. during boss fights); the queue simply waits that out.
+local function FlushChat(fromInput)
+    if #chatQueue == 0 or ChatLocked() then return end
+    local canSay = fromInput or SafeCall(IsInInstance)
+    local waiting = {}
+    for _, entry in ipairs(chatQueue) do
+        if entry.chatType == "SAY" and not canSay then
+            waiting[#waiting + 1] = entry
+        else
+            pcall(SendChat, entry.msg, entry.chatType, nil, entry.target)
+        end
     end
-    wipe(sayQueue)
+    chatQueue = waiting
+end
+
+local function FlushSay()
+    FlushChat(true)
 end
 
 local function QueueSay(msg)
-    sayQueue[#sayQueue + 1] = msg
-    if SafeCall(IsInInstance) then FlushSay() end
+    chatQueue[#chatQueue + 1] = { msg = msg, chatType = "SAY" }
+    FlushChat(false)
+end
+
+local function QueueWhisper(msg, target)
+    chatQueue[#chatQueue + 1] = { msg = msg, chatType = "WHISPER", target = target }
+    FlushChat(false)
+end
+
+-- "Healthstone", "Soulstone", "Spellstone" or "Firestone" when a spell or item
+-- name is one of the warlock's conjured stones.
+local STONE_KINDS = { "Healthstone", "Soulstone", "Spellstone", "Firestone" }
+local function StoneKind(name)
+    if not name then return nil end
+    for _, kind in ipairs(STONE_KINDS) do
+        if name:find(kind, 1, true) then return kind end
+    end
 end
 
 local inputFrame
@@ -391,13 +416,20 @@ end
 -- A shard that vanishes right before or after one of our casts was consumed by
 -- it; otherwise it was deleted, sold or traded and is dropped quietly. The cast
 -- event can arrive just after the bag update, so decide a moment later.
+-- Shards turned into a Healthstone or Soulstone aren't announced now: the stone
+-- carries the soul and Stones.lua tells whoever receives it.
 local function OnShardGone(rec)
     local goneAt = GetTime()
     C_Timer.After(0.5, function()
         local cast = lastCast
         if cast and math.abs(cast.at - goneAt) <= CONSUME_WINDOW then
             if not rec.unknown then MarkUsed(rec, cast.name) end
-            AnnounceConsumed(rec, cast.name)
+            local stone = StoneKind(cast.name)
+            if stone then
+                ns.OnStoneCreated(stone, rec)
+            else
+                AnnounceConsumed(rec, cast.name)
+            end
         end
     end)
 end
@@ -776,6 +808,12 @@ SlashCmdList.SOULSOURCESHARDS = function(msg)
         Print("Consumed shards are now announced " .. (db.say and "in /say." or "only to you."))
         ns.RefreshOptions()
         ns.Persist()
+    elseif cmd == "whisper" then
+        db.stoneWhisper = not db.stoneWhisper
+        Print("Healthstone/Soulstone souls are now " ..
+            (db.stoneWhisper and "whispered to whoever gets the stone." or "only shown to you."))
+        ns.RefreshOptions()
+        ns.Persist()
     elseif cmd == "lucky" then
         db.milestones = not db.milestones
         Print("Lucky number shout-outs (Nice, Dubs!...) " .. (db.milestones and "enabled." or "disabled."))
@@ -793,6 +831,7 @@ SlashCmdList.SOULSOURCESHARDS = function(msg)
         DEFAULT_CHAT_FRAME:AddMessage("  /shards stats - most-captured souls")
         DEFAULT_CHAT_FRAME:AddMessage("  /shards announce - toggle the chat message on capture")
         DEFAULT_CHAT_FRAME:AddMessage("  /shards say - toggle announcing consumed shards in /say")
+        DEFAULT_CHAT_FRAME:AddMessage("  /shards whisper - toggle whispering a stone's soul to whoever gets it")
         DEFAULT_CHAT_FRAME:AddMessage("  /shards lucky - toggle Nice / Very Nice / Dubs! shout-outs")
         DEFAULT_CHAT_FRAME:AddMessage("  /shards reset - clear statistics and history")
     end
@@ -811,6 +850,18 @@ ns.RefreshOptions = function() end -- replaced by Options.lua
 ns.Persist = function() end        -- replaced by Persist.lua
 ns.OnCombatEnded = function() end  -- replaced by Persist.lua
 ns.MacroBackupActive = function() return false end -- replaced by Persist.lua
+ns.OnStoneCreated = function() end -- replaced by Stones.lua
+ns.Plain = Plain
+ns.SafeCall = SafeCall
+ns.Location = Location
+ns.ColoredName = ColoredName
+ns.NumberTag = NumberTag
+ns.StoneKind = StoneKind
+ns.QueueWhisper = QueueWhisper
+ns.CarriedBags = carriedBags
+ns.GetContainerNumSlots = GetContainerNumSlots
+ns.GetContainerItemLink = GetContainerItemLink
+ns.GetSpellName = GetSpellName
 ns.UpdateMinimapButton = function() end           -- replaced by Minimap.lua
 
 -------------------------------------------------------------------------------
@@ -857,6 +908,8 @@ events:SetScript("OnEvent", function(_, event, arg1, _, arg3)
         db.shards = db.shards or {}
         db.history = db.history or {}
         db.stats = db.stats or { total = 0, byName = {} }
+        db.stones = db.stones or {}
+        if db.stoneWhisper == nil then db.stoneWhisper = true end
         if db.announce == nil then db.announce = true end
         if db.say == nil then db.say = true end
         if db.milestones == nil then db.milestones = true end

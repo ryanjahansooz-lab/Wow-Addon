@@ -2,11 +2,12 @@
 ## Title: |cff9482c9SoulSource|r
 ## Notes: Remembers whose soul is inside every Soul Shard. Options: /soulsource or the minimap button. Shard list: /shards.
 ## Author: ryanjahansooz
-## Version: 1.4.1
+## Version: 1.5.0
 ## SavedVariablesPerCharacter: SoulSourceCharDB
 
 SoulSource.lua
 Options.lua
 Minimap.lua
 Tutorial.lua
+Stones.lua
 Persist.lua

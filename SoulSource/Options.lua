@@ -20,7 +20,16 @@ local OPTIONS = {
     {
         key = "say",
         label = "/say when a shard is consumed",
-        tip = "\"Soul Shard #42 consumed by Create Healthstone: the soul of ...\"\nWhen off, only you see the message.",
+        tip = "\"Soul Shard #42 consumed by Summon Voidwalker: the soul of ...\"\n" ..
+            "Shards turned into a Healthstone or Soulstone are announced later, to whoever gets the stone.\n" ..
+            "When off, only you see the message.",
+    },
+    {
+        key = "stoneWhisper",
+        label = "Whisper a Healthstone/Soulstone's soul to whoever gets it",
+        tip = "When you trade a Healthstone (cookie) or Soulstone to a player, or use a Soulstone on one, " ..
+            "they get a whisper: \"The Healthstone I just gave you holds the soul of Defias Pillager " ..
+            "(Soul Shard #42), taken in Westfall.\"\nWhen off, only you see the message.",
     },
     {
         key = "milestones",
@@ -97,7 +106,7 @@ local function CreateOptionsFrame()
         local close = CreateFrame("Button", nil, f, "UIPanelCloseButton")
         close:SetPoint("TOPRIGHT", -4, -4)
     end
-    f:SetSize(420, 390)
+    f:SetSize(420, 420)
     f:SetPoint("CENTER")
     f:SetFrameStrata("DIALOG")
     f:SetMovable(true)

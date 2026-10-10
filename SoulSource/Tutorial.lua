@@ -33,12 +33,12 @@ local PAGES = {
     {
         title = "Consuming shards",
         icon = "Interface\\Icons\\INV_Stone_04",
-        text = "When a spell uses up a shard (Healthstone, Soulstone, summoning a demon, Shadowburn, " ..
-            "Soul Fire...), your character says it in /say, for example:\n\n" ..
-            "|cffffffff\"Soul Shard #42 consumed by Create Healthstone: the soul of Defias Pillager, " ..
+        text = "When a spell uses up a shard (summoning a demon, Shadowburn, Soul Fire...), your " ..
+            "character says it in /say, for example:\n" ..
+            "|cffffffff\"Soul Shard #42 consumed by Summon Voidwalker: the soul of Defias Pillager, " ..
             "taken in Westfall.\"|r\n\n" ..
-            "Outside dungeons the game only allows this on a key press or click, so the message " ..
-            "goes out on your next one.",
+            "A Healthstone (cookie) or Soulstone keeps its shard's soul instead. When you trade it to " ..
+            "someone, or use a Soulstone on them, they get a whisper telling them whose soul it holds.",
     },
     {
         title = "Lucky numbers",
